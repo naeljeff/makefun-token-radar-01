@@ -29,7 +29,6 @@ function arg(name: string, fallback: string): string {
 
 const round4 = (x: number): number => Math.round(x * 10000) / 10000;
 
-// Regular, non-dot files of a directory, sorted by name; empty when the directory is missing.
 function listFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((n) => !n.startsWith('.') && statSync(join(dir, n)).isFile()).sort();

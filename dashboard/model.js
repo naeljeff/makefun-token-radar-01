@@ -2,6 +2,7 @@
  * Token launch radar value model, comps-1. Pure: no network, clock, Intl or randomness.
  * implied = tvl * multiple * growth * runway * family
  *   multiple: exp of mean ln(mcap/tvl) per category, shrunk to the global mean (weight 4).
+ *             Versioned releases are excluded: they carry their parent token's whole market cap.
  *   growth:   sqrt(1 + clamp(change_7d, -40, 60) / 100).
  *   runway:   ramp (age to 540d, floor 0.5) * stale (after 1095d, -15%/yr, floor 0.6).
  *   family:   0.4 when a traded token shares the first name word (length >= 4).
@@ -28,7 +29,6 @@
     Stellar: 0.01, Ripple: 0.01, Algorand: 0.01, Cardano: 0.2, TON: 0.05, Near: 0.01, Sei: 0.01,
     Flare: 0.02, 'Robinhood Chain': 0.02, Arc: 0.02, Bittensor: 0.01, Provenance: 0.05,
   };
-  // Category → farm-plan group; anything unlisted is 'other'.
   const GROUP_OF = {};
   const GROUPS = {
     vault: ['Risk Curators', 'Onchain Capital Allocator', 'Yield', 'Yield Aggregator', 'Liquidity Manager', 'Farm', 'Leveraged Farming', 'Indexes', 'Governance Incentives', 'Options Vault'],
@@ -82,8 +82,8 @@
     return out;
   }
 
-  // Traded set: token with positive mcap and TVL, excluding CEX.
-  const tradedSet = protocols => protocols.filter(p => recordsToken(p) && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX');
+  // Versioned releases carry their parent token's whole market cap, which would skew the comps.
+  const tradedSet = protocols => protocols.filter(p => recordsToken(p) && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX' && setAside(p) !== 'versioned release');
   const ratioOf = p => clamp(p.mcap_usd / p.tvl_usd, C.ratio_min, C.ratio_max);
 
   function comps(protocols) {
