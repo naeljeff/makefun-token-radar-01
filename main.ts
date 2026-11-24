@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const Model = require('./dashboard/model.js');
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const FORMULA = 'implied_value_usd = tvl_usd x category mcap/TVL multiple of traded tokens (shrunk toward the all-token multiple) x sqrt(1 + clamped 7d TVL change) x runway (ramps in over 540 days with no token, fades after 3 years) x 0.4 when a traded token shares the name';
+const FORMULA = 'implied_value_usd = launch value (TVL x fitted size curve x kept terms, each kept only if it cuts the held-out miss both leave-one-out and walk-forward) x token odds (logistic on the kept terms, fitted on peers that do or do not record a token)';
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
 function fail(code: number, message: string): never {
@@ -26,8 +26,6 @@ function arg(name: string, fallback: string): string {
   const withEquals = process.argv.find((a) => a.startsWith(`--${name}=`));
   return withEquals === undefined ? fallback : withEquals.slice(name.length + 3);
 }
-
-const round4 = (x: number): number => Math.round(x * 10000) / 10000;
 
 function listFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -62,18 +60,25 @@ for (const name of shotNames) {
   if (!IMAGE_NAME.test(name)) fail(1, `token radar: screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters`);
 }
 const dashBytes = dashNames.reduce((sum, n) => sum + statSync(join(here, 'dashboard', n)).size, 0);
-if (dashBytes > 60000) process.stderr.write(`token radar: warning: dashboard source is ${dashBytes} bytes, over 60000: the dossier text may be cut\n`);
+if (dashBytes > 64500) process.stderr.write(`token radar: warning: dashboard source is ${dashBytes} bytes, over 64500: the dossier text may be cut\n`);
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), JSON.stringify({
-  version: model.version, as_of: model.as_of, source: model.source, formula: FORMULA, constants: model.constants,
-  comps: {
-    traded_tokens: model.comps.n, all_token_multiple: round4(model.comps.global),
-    by_category: Object.fromEntries(Object.entries(model.comps.byCategory).map(([k, v]: [string, any]) => [k, { traded: v.n, multiple: round4(v.multiple) }])),
+const board = {
+  version: model.version, as_of: model.as_of, source: model.source, formula: FORMULA,
+  value: {
+    kept: model.value.kept, terms: model.value.terms, baseline: model.value.baseline, final: model.value.final,
+    q: model.value.q, cover: model.value.cover, coef: model.value.coef,
   },
-  counts: model.counts, rows,
-}) + '\n');
-writeFileSync(join(out, 'data.js'), `window.RADAR_SNAPSHOT=${JSON.stringify(snapshot)};\n`);
+  odds: {
+    kept: model.odds.kept, terms: model.odds.terms, baseline: model.odds.baseline, final: model.odds.final,
+    coef: model.odds.coef, base_rate: model.odds.base_rate,
+  },
+  counts: model.counts, groups: model.groups, checksum: Model.fnv(JSON.stringify(rows)), rows,
+};
+writeFileSync(join(out, 'board.json'), JSON.stringify(board, null, 1) + '\n');
+const total = rows.reduce((t: number, r: any) => t + r.implied_value_usd, 0);
+const radarBoard = { checksum: board.checksum, n: rows.length, total, rows: rows.map((r: any) => [r.slug, r.rank, r.implied_value_usd]) };
+writeFileSync(join(out, 'data.js'), `window.RADAR_SNAPSHOT=${JSON.stringify(snapshot)};window.RADAR_BOARD=${JSON.stringify(radarBoard)};\n`);
 
 mkdirSync(join(out, 'dashboard'), { recursive: true });
 for (const name of dashNames) copyFileSync(join(here, 'dashboard', name), join(out, 'dashboard', name));
@@ -87,6 +92,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, {
 
 const c = model.counts;
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ranked ${c.ranked}, watchlist covered ${c.watch_covered}/${snapshot.watchlist.length}, early ${c.early}, traded comps ${model.comps.n}\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ranked ${c.ranked}, watchlist covered ${c.watch_covered}/${snapshot.watchlist.length}, early ${c.early}, traded comps ${model.value.n}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashNames.length} files, ${dashBytes} bytes), ${join(out, 'screenshots')} (${shotNames.length} images), ${join(out, 'dossier.json')}\n`,
 );
