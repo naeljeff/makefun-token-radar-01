@@ -1,12 +1,12 @@
-/* Launch radar board. Renders RadarModel.build() output; all UI state lives in location.hash. */
 const M = RadarModel.build(RADAR_SNAPSHOT);
 const RB = RADAR_BOARD, RBM = new Map(RB.rows.map(x => [x[0], x]));
 const { fmtUsd: usd, fmtPct: pct, plan: planOf, verdict: verdictOf, boardRows, fnv, DEFAULTS } = RadarModel;
 const app = document.getElementById('app');
 const N = M.rows.length, TOTAL = M.counts.protocols;
-const DEF = { tab: 'all', q: '', cat: '', chain: '', vd: 'any', dep: '10000', sh: '0.07', sort: 'rank', dir: 'asc', p: '' };
+const DEF = { tab: 'all', q: '', cat: '', chain: '', vd: 'any', dep: '10000', sh: '0.07', hz: '', sort: 'rank', dir: 'asc', p: '' };
 const TABN = { all: ['All', N], watchlist: ['Watchlist', M.counts.watchlist], offlist: ['Off-list', M.counts.offlist], early: ['Early', M.counts.early], traded: ['Token trades', M.counts.priced] };
 const VDS = ['any', 'FARM', 'MARGINAL', 'SKIP'], DEPS = ['1000', '3000', '10000', '30000'], SHARES = ['0.035', '0.07', '0.14'];
+const HZ = [['', 'Auto'], ['4', '4 wk'], ['8', '8 wk'], ['13', '13 wk'], ['26', '26 wk']];
 const SORTS = ['rank', 'tvl', 'growth', 'age', 'odds', 'implied', 'net', 'hour', 'name', 'ratio'];
 const KEY = {
   rank: r => r.rank, tvl: r => r.tvl_usd, growth: r => r.change_7d ?? -Infinity, age: r => r.age_days ?? -1, odds: r => r.odds,
@@ -15,7 +15,7 @@ const KEY = {
 const TKEY = { rank: r => -r.mcap_usd, name: r => r.name.toLowerCase(), tvl: r => r.tvl_usd, implied: r => r.mcap_usd, odds: r => r.ratio, ratio: r => r.ratio / r.predicted };
 const TAGS = { watchlist: ['w', 'WATCHLIST'], offlist: ['o', 'OFF-LIST'], early: ['e', 'EARLY'] };
 const VCLS = { FARM: 'teal', MARGINAL: 'amber', SKIP: 'coral' };
-const TL = { size: 'size curve', years: 'years listed', growth: '7-day change', chains: 'chain count', category: 'category, shrunk' };
+const TL = { size: 'size curve', years: 'years listed', growth: '7-day change', chains: 'chain count', category: 'category, shrunk', pace: '7-day pace' };
 const LO = Math.log10(Math.min(...M.rows.map(r => r.lo10))), HI = Math.log10(Math.max(...M.rows.map(r => r.hi90)));
 const at = x => (Math.log10(x) - LO) / (HI - LO) * 100;
 const BOARD_COLS = [
@@ -34,6 +34,10 @@ const num = x => (x < 0 ? '−' : '') + Math.abs(x).toFixed(3);
 const sg = x => (x < 0 ? '−' : '+') + Math.abs(x).toFixed(3);
 const sp = x => +(x * 100).toFixed(1);
 const pc = x => Math.round(x * 100) + '%';
+const shOf = v => (v == null || v === '' || Number.isNaN(Number(v)) ? DEF.sh : String(+(Math.round(Math.min(0.2, Math.max(0.01, Number(v))) / 0.005) * 0.005).toFixed(3)));
+const hzOf = s => (s.hz ? Number(s.hz) : undefined);
+const se2 = (S, k) => (S.se && Number.isFinite(S.se[k]) ? S.se[k].toFixed(2) : '');
+const pm = (S, k, a = '', b = '') => (se2(S, k) ? a + '±' + b + se2(S, k) : '');
 const ageText = d => (d === null ? 'n/a' : d >= 365 ? (d / 365).toFixed(1) + 'y' : d + 'd');
 const growthCls = v => (v == null ? '' : v > 0 ? 'teal' : v < 0 ? 'coral' : '');
 const chainsOf = r => r.chains.slice(0, 2).join(', ') + (r.chains.length > 2 ? ` +${r.chains.length - 2}` : '');
@@ -49,22 +53,6 @@ function h(tag, attrs, ...kids) {
     el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   }
   return el;
-}
-
-function glyph() {
-  // XML namespace id, never fetched; joined so the no-URL rule holds for the source text.
-  const NS = ['http:', '', 'www.w3.org', '2000', 'svg'].join('/');
-  const el = (tag, attrs) => {
-    const n = document.createElementNS(NS, tag);
-    for (const k in attrs) n.setAttribute(k, attrs[k]);
-    return n;
-  };
-  const svg = el('svg', { viewBox: '0 0 24 24', width: 20, height: 20, 'aria-hidden': 'true', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6 });
-  svg.append(
-    el('path', { d: 'M4 12a8 8 0 0 1 16 0M8 12a4 4 0 0 1 8 0' }),
-    el('path', { d: 'M12 12l6-6' }),
-    el('circle', { cx: 12, cy: 12, r: 1.6, fill: 'currentColor' }));
-  return svg;
 }
 
 const tile = (label, value, note) => h('div', { class: 'tile' }, h('span', { class: 'lbl' }, label), h('b', null, value), h('span', { class: 'sub' }, note));
@@ -83,15 +71,14 @@ function readState() {
   const sort = pick('sort', SORTS);
   return {
     tab: pick('tab', Object.keys(TABN)), q: qs.get('q') || '', cat: qs.get('cat') || '', chain: qs.get('chain') || '', vd: pick('vd', VDS),
-    dep: pick('dep', DEPS), sh: pick('sh', SHARES), sort,
+    dep: pick('dep', DEPS), sh: shOf(qs.get('sh')), hz: pick('hz', HZ.map(x => x[0])), sort,
     dir: ['asc', 'desc'].includes(qs.get('dir')) ? qs.get('dir') : defDir(sort), p: qs.get('p') || '',
   };
 }
 
-// Omits every key at its default so the hash stays short.
 function toHash(s) {
   const qs = new URLSearchParams();
-  for (const k of ['tab', 'q', 'cat', 'chain', 'vd', 'dep', 'sh', 'sort', 'p']) if (String(s[k]) !== DEF[k]) qs.set(k, s[k]);
+  for (const k of ['tab', 'q', 'cat', 'chain', 'vd', 'dep', 'sh', 'hz', 'sort', 'p']) if (String(s[k]) !== DEF[k]) qs.set(k, s[k]);
   if (s.dir !== defDir(s.sort)) qs.set('dir', s.dir);
   const str = qs.toString();
   return str ? '#' + str : '';
@@ -99,16 +86,17 @@ function toHash(s) {
 
 function go(patch, replace) {
   const s = Object.assign(readState(), patch);
+  s.sh = shOf(s.sh);
   history[replace ? 'replaceState' : 'pushState'](null, '', location.pathname + location.search + toHash(s));
   render();
 }
 
-// Verdicts and plans at the page's deposit and drop share; the default pair equals board.json.
+// Verdicts and plans at the page's deposit, drop share and horizon; the default trio equals board.json.
 function calc(s) {
-  const dep = Number(s.dep), sh = Number(s.sh);
-  return M.rows.map(r => { const plan = planOf(r, dep); return { ...r, dep, plan, v: verdictOf({ ...r, plan }, dep, sh) }; });
+  const dep = Number(s.dep), sh = Number(s.sh), wk = hzOf(s);
+  return M.rows.map(r => { const plan = planOf(r, dep, wk); return { ...r, dep, plan, v: verdictOf({ ...r, plan }, dep, sh) }; });
 }
-const netAt = (r, dep, sh) => verdictOf({ ...r, plan: planOf(r, dep) }, dep, sh).net;
+const netAt = (r, dep, sh, wk) => verdictOf({ ...r, plan: planOf(r, dep, wk) }, dep, sh).net;
 
 function visible(s, rows) {
   const base = s.tab === 'traded' ? M.traded : s.tab === 'all' ? rows : rows.filter(r => r.set === s.tab);
@@ -132,7 +120,7 @@ function sortRows(list, s) {
 
 function mast() {
   return h('header', { class: 'mast' },
-    h('div', { class: 'brand' }, glyph(), h('b', null, 'Launch Radar'),
+    h('div', { class: 'brand' }, h('i', { class: 'mark', 'aria-hidden': 'true' }), h('b', null, 'Launch Radar'),
       h('span', { class: 'sub' }, 'pre-token protocols ranked by launch value × token odds, from the snapshot\'s own record')),
     h('div', { class: 'sub' }, `DefiLlama snapshot ${M.as_of} · model ${M.version} · recomputed in this browser`));
 }
@@ -146,17 +134,19 @@ function kpis(rows, s) {
     tile('Held-out miss', '×' + V.final.wf.toFixed(2), `walk-forward; flat multiple ×${V.baseline.wf.toFixed(2)} · LOO ×${V.final.loo.toFixed(2)}`),
     tile('Range honest?', `${pc(V.cover.wf50)} · ${pc(V.cover.wf80)}`, 'newer caps inside P25–P75 · P10–P90 (stated 50% · 80%)'),
     tile('Token odds', O.final.wf.toFixed(3), `walk-forward Brier vs ${O.baseline.wf.toFixed(3)} base rate`),
-    tile('Worth farming', `${cnt('FARM')} of ${N}`, `${cnt('MARGINAL')} marginal · ${cnt('SKIP')} skip at ${usd(dep)}, ${sp(sh)}% drop share, net of fees and ${DEFAULTS.tbill * 100}% T-bill`),
+    tile('Worth farming', `${cnt('FARM')} of ${N}`, `${cnt('MARGINAL')} marginal · ${cnt('SKIP')} skip at ${usd(dep)}, ${sp(sh)}% drop share, net of fees and ${DEFAULTS.tbill * 100}% T-bill · ${s.hz ? s.hz + '-week' : 'age-set'} hold`),
     tile('Implied total', usd(sumImp), `${usd(sumL)} if every one launched`));
 }
 
 function formula() {
-  const V = M.value, O = M.odds, c = V.coef, lbl = { years: 'years listed', size: 'ln TVL', growth: '7d change', chains: 'ln chains', kin: 'name kin', category: 'category' };
-  const vt = V.kept.filter(t => t in c).map(t => `${sg(c[t])} × ${lbl[t]}`), ot = O.kept.map(t => `${sg(O.coef[t])} × ${lbl[t]}`);
+  const V = M.value, O = M.odds, c = V.coef, pace = V.kept.includes('pace');
+  const lbl = { years: 'years listed', size: 'ln TVL', growth: '7d change', chains: 'ln chains', category: 'category' };
+  const vt = V.kept.filter(t => t in c).map(t => `${sg(c[t])}${pm(V, t)} × ${lbl[t]}`), ot = O.kept.map(t => `${sg(O.coef[t])}${pm(O, t)} × ${lbl[t]}`);
   return h('div', { class: 'formula' },
     h('div', null, 'implied value ', h('b', null, '='), ' launch value × token odds'),
-    h('div', { class: 'muted' }, `launch value = TVL × e^(${num(c.intercept)} ${vt.join(' ')})`),
-    h('div', { class: 'muted' }, `token odds = logistic(${num(O.coef.intercept)} ${ot.join(' ')})`));
+    h('div', { class: 'muted' }, `launch value = TVL × e^(${num(c.intercept)}${pm(V, 'intercept')} ${vt.join(' ')})`),
+    h('div', { class: 'muted' }, `token odds = logistic(${num(O.coef.intercept)}${pm(O, 'intercept')} ${ot.join(' ')})`),
+    pace ? h('div', { class: 'muted' }, 'TVL last week = TVL ÷ (1 + 7d change): a week\'s growth lowers the base the size curve reads') : null);
 }
 
 function acct() {
@@ -166,7 +156,6 @@ function acct() {
     h('ul', { class: 'legend' }, M.groups.map((g, i) => g.n ? h('li', null, h('i', { class: 'sw g' + i }), g.label, h('b', null, g.n)) : null)));
 }
 
-// Recomputes the table in this browser and compares it with the entry's own board.json figures.
 function checks() {
   const B = boardRows(M), mine = B.map(r => [r.slug, r.rank, r.implied_value_usd]);
   const sum = mine.reduce((t, x) => t + x[2], 0), csum = fnv(JSON.stringify(B));
@@ -183,7 +172,7 @@ function checks() {
 }
 
 function evidence() {
-  const V = M.value, O = M.odds, x2 = v => '×' + v.toFixed(2), x3 = v => v.toFixed(3), p0 = x => Math.round(x * 100) + '%';
+  const V = M.value, O = M.odds, PL = V.placebo, x2 = v => '×' + v.toFixed(2), x3 = v => v.toFixed(3), p0 = x => Math.round(x * 100) + '%';
   const tagOf = k => (k ? h('span', { class: 'tag kept' }, 'kept') : 'tested, not kept');
   const tA = h('table', null, thr(['Term', 'LOO', 'WF', '']), h('tbody', null,
     h('tr', { class: 'base' }, h('td', null, 'flat multiple'), h('td', { class: 'n' }, x2(V.baseline.loo)), h('td', { class: 'n' }, x2(V.baseline.wf)), h('td', null, 'baseline')),
@@ -202,7 +191,8 @@ function evidence() {
       card(`Launch value: typical miss, ${V.n} traded tokens`, tA),
       card(`Token odds: Brier, ${O.n} peers`, tB),
       card('Is the printed range honest?', tC, h('h4', null, 'The record behind the odds'), tD)),
-    h('p', { class: 'ev-note' }, 'A term is kept only if it lowers the held-out miss in both tests. The odds are the peers\' record, not a forecast. The page never says a token will launch.'));
+    h('p', { class: 'ev-note' }, 'A term is kept only if it lowers the held-out miss in both tests. The odds are the peers\' record, not a forecast. The page never says a token will launch.'),
+    PL ? h('p', { class: 'ev-note' }, `Placebo: shuffled 7-day change ${PL.rounds} times; ${PL.as_good} priced as well on both tests.`) : null);
 }
 
 function toolbar(s, base, pre, list) {
@@ -221,14 +211,18 @@ function toolbar(s, base, pre, list) {
     seg('Board tab', Object.keys(TABN).map(k => [k, `${TABN[k][0]} ${TABN[k][1]}`, s.tab === k, 'data-tab'])),
     t ? null : seg('Verdict', VDS.map(k => [k, k === 'any' ? `Any ${vdN(k)}` : `${k[0] + k.slice(1).toLowerCase()} ${vdN(k)}`, s.vd === k, 'data-vd'])),
     t ? null : sel('dep', 'Deposit', DEPS.map(d => [d, usd(+d)]), s.dep),
-    t ? null : seg('Drop share', SHARES.map(x => [x, sp(+x) + '%', s.sh === x, 'data-sh'])),
+    t ? null : h('label', { class: 'field' }, h('span', null, 'Drop share'),
+      h('input', { id: 'sh', name: 'sh', type: 'range', min: '0.01', max: '0.2', step: '0.005', value: s.sh, 'aria-valuetext': sp(+s.sh) + '%' }),
+      h('b', { class: 'amber' }, sp(+s.sh) + '%')),
+    t ? null : seg('Horizon', HZ.map(([k, x]) => [k, x, s.hz === k, 'data-hz'])),
     h('label', { class: 'field grow' }, h('span', { class: 'sr' }, 'Search'),
       h('input', { id: 'q', type: 'search', placeholder: 'Search name, slug or chain', value: s.q, autocomplete: 'off' })),
     sel('cat', 'Category', opt(cats, s.cat, 'All categories'), s.cat),
     t ? null : sel('chain', 'Chain', opt(chains, s.chain, 'All chains'), s.chain),
     h('span', { class: 'count' }, shown),
     h('button', { type: 'button', class: 'ghost', 'data-reset': '' }, 'Reset'),
-    h('button', { type: 'button', class: 'ghost', 'data-csv': '' }, 'CSV'));
+    h('button', { type: 'button', class: 'ghost', 'data-csv': '' }, 'CSV'),
+    h('button', { type: 'button', class: 'ghost', 'data-json': '' }, 'JSON'));
 }
 
 function thead(cols, s) {
@@ -239,7 +233,7 @@ function thead(cols, s) {
   })));
 }
 
-const emptyRow = n => h('tr', { class: 'empty' }, h('td', { colspan: n }, 'No protocol matches these filters. ', h('button', { type: 'button', class: 'ghost', 'data-reset': '' }, 'Reset')));
+const emptyRow = n => h('tr', { class: 'empty' }, h('td', { colspan: n }, 'No match. ', h('button', { type: 'button', class: 'ghost', 'data-reset': '' }, 'Reset')));
 
 function rangeBar(r) {
   const span = (a, b) => `left:${at(a).toFixed(2)}%;width:${(at(b) - at(a)).toFixed(2)}%`;
@@ -254,7 +248,7 @@ function boardRow(s, r) {
   return h('tr', { 'data-href': href },
     h('td', { class: 'num' }, h('div', null, r.rank), h('div', { class: 'sub' }, `${r.rank_lo}–${r.rank_hi}`)),
     h('td', null, h('a', { href }, r.name), ' ', h('span', { class: 'tag ' + tg[0] }, tg[1]),
-      h('div', { class: 'sub' }, `${r.category || 'uncategorised'} · ${chainsOf(r)}`)),
+      h('div', { class: 'sub' }, `${r.category || 'none'} · ${chainsOf(r)}`)),
     h('td', { class: 'n' }, usd(r.tvl_usd)),
     h('td', { class: 'n ' + growthCls(r.change_7d) }, pct(r.change_7d)),
     h('td', { class: 'n' }, ageText(r.age_days)),
@@ -268,13 +262,14 @@ function boardRow(s, r) {
 }
 
 function boardTable(s, list) {
-  return h('div', { class: 'tablewrap' }, h('table', null, thead(BOARD_COLS, s),
-    h('tbody', null, list.length ? list.map(r => boardRow(s, r)) : emptyRow(BOARD_COLS.length))));
+  const cols = BOARD_COLS.map(c => (c.k === 'growth' && M.value.kept.includes('pace') ? { ...c, t: '7d · in value' } : c));
+  return h('div', { class: 'tablewrap' }, h('table', null, thead(cols, s),
+    h('tbody', null, list.length ? list.map(r => boardRow(s, r)) : emptyRow(cols.length))));
 }
 
 function tradedTable(s, list) {
   return h('div', { class: 'tablewrap' },
-    h('p', { class: 'note' }, 'These protocols record a traded token on DefiLlama. Their market cap ÷ TVL by category prices the pre-token multiples. They price the model and are never ranked.'),
+    h('p', { class: 'note' }, 'Traded tokens: market cap ÷ TVL prices the model. Never ranked.'),
     h('table', null, thead(TRADED_COLS, s), h('tbody', null, list.length ? list.map(r => h('tr', null,
       h('td', null, h('b', null, r.name), ' ', h('span', { class: 'sub' }, r.symbol || '')),
       h('td', null, r.category || '—'), h('td', { class: 'n' }, usd(r.tvl_usd)), h('td', { class: 'n' }, usd(r.mcap_usd)),
@@ -301,34 +296,39 @@ function waterfall(r) {
     growth: [pct(r.change_7d), P.growth],
     chains: [`${r.chains.length} chains`, P.chains],
     category: [r.category || 'none', P.cat],
+    pace: [pct(r.change_7d) + ' in 7d', P.pace],
   };
   const vrows = [
     wr('TVL', usd(r.tvl_usd), null, 'locked today'),
     wr('× flat multiple', null, P.base, `e^${num(V.coef.intercept)}; flat miss LOO ×${V.baseline.loo.toFixed(2)} · WF ×${V.baseline.wf.toFixed(2)}`),
     ...V.kept.map(t => {
       const [x, f] = X[t], m = tm(t);
-      return wr(`× ${TL[t]}`, x, f, `${t === 'category' ? 'shrunk category effect' : 'coef ' + sg(V.coef[t])} · kept: miss LOO ×${m.loo.toFixed(2)} · WF ×${m.wf.toFixed(2)}`);
+      const why = t === 'category' ? 'shrunk category effect'
+        : t === 'pace' ? `TVL last week ${usd(r.tvl_usd / (1 + (r.change_7d || 0) / 100))}`
+          : 'coef ' + sg(V.coef[t]) + pm(V, t, ' ', ' ');
+      return wr(`× ${TL[t]}`, x, f, `${why} · kept: miss LOO ×${m.loo.toFixed(2)} · WF ×${m.wf.toFixed(2)}`);
     }),
     wr('= launch value', usd(r.launch), null, 'TVL × every factor above', 'total'),
   ];
   const lg = P.intercept + P.logit.reduce((t, x) => t + x.x * x.coef, 0);
   const orows = [
-    h('tr', null, h('td', null, 'intercept'), h('td', { class: 'n' }, '1'), h('td', { class: 'n' }, num(P.intercept)), h('td', { class: 'n' }, num(P.intercept)), h('td', { class: 'sub' })),
+    h('tr', null, h('td', null, 'intercept'), h('td', { class: 'n' }, '1'), h('td', { class: 'n' }, num(P.intercept)), h('td', { class: 'n' }, se2(O, 'intercept')),
+      h('td', { class: 'n' }, num(P.intercept)), h('td', { class: 'sub' })),
     ...P.logit.map(x => h('tr', { class: 'kept' }, h('td', null, ol[x.term].label), h('td', { class: 'n' }, x.x.toFixed(3)),
-      h('td', { class: 'n' }, num(x.coef)), h('td', { class: 'n' }, num(x.x * x.coef)),
+      h('td', { class: 'n' }, num(x.coef)), h('td', { class: 'n' }, se2(O, x.term)), h('td', { class: 'n' }, num(x.x * x.coef)),
       h('td', { class: 'sub' }, `10-fold ${ol[x.term].cv.toFixed(3)} · WF ${ol[x.term].wf.toFixed(3)}`))),
-    h('tr', { class: 'total' }, h('td', null, 'logit'), h('td'), h('td'), h('td', { class: 'n' }, num(lg)), h('td', { class: 'sub' }, `logistic = ${pc(r.odds)}`)),
+    h('tr', { class: 'total' }, h('td', null, 'logit'), h('td'), h('td'), h('td'), h('td', { class: 'n' }, num(lg)), h('td', { class: 'sub' }, `logistic = ${pc(r.odds)}`)),
   ];
   return card('How the figure is made',
     h('table', null, thr(['Step', 'Value', 'Factor', 'Why']), h('tbody', null, vrows)),
     h('h4', null, 'Token odds, logit'),
-    h('table', null, thr(['Odds term', 'x', 'coef', 'x × coef', 'Held-out Brier'], 1), h('tbody', null, orows)),
+    h('table', null, thr(['Odds term', 'x', 'coef', '± s.e.', 'x × coef', 'Held-out Brier'], 1), h('tbody', null, orows)),
     h('p', { class: 'final' }, `launch ${usd(r.launch)} × odds ${pc(r.odds)} = implied ${usd(r.implied_value_usd)}`),
     h('p', { class: 'sub' }, `P25–P75 ${usd(r.lo25)} – ${usd(r.hi75)} · P10–P90 ${usd(r.lo10)} – ${usd(r.hi90)}`));
 }
 
 function detail(s, r, rows) {
-  const v = r.v, dep = r.dep, idx = rows.indexOf(r), prev = rows[idx - 1], next = rows[idx + 1];
+  const v = r.v, dep = r.dep, idx = rows.indexOf(r), prev = rows[idx - 1], next = rows[idx + 1], wk = hzOf(s);
   const link = x => toHash({ ...s, p: x.slug });
   const ok = RBM.has(r.slug) && RBM.get(r.slug)[1] === r.rank && RBM.get(r.slug)[2] === r.implied_value_usd;
   const W = Math.round(r.plan.find(p => p.kind === 'CADENCE').min / 5);
@@ -338,7 +338,7 @@ function detail(s, r, rows) {
       h('div', { class: 'kick' }, `#${r.rank} of ${N} by implied value · rank ${r.rank_lo}–${r.rank_hi} across 100 bootstrap refits`),
       h('h2', null, r.name),
       h('div', { class: 'pills' }, h('span', { class: 'tag ' + TAGS[r.set][0] }, TAGS[r.set][1]),
-        r.category ? h('span', { class: 'pill' }, r.category) : null, h('span', { class: 'sub' }, r.chains.join(', ') || 'no chain on record')),
+        r.category ? h('span', { class: 'pill' }, r.category) : null, h('span', { class: 'sub' }, r.chains.join(', ') || 'no chain')),
       h('div', { class: 'facts' }, fact('TVL', usd(r.tvl_usd)), fact('7-day change', pct(r.change_7d), growthCls(r.change_7d)),
         fact('Listed since', r.listed_at || 'n/a'), fact('No token for', ageText(r.age_days)))),
     h('div', { class: 'dright' },
@@ -346,7 +346,6 @@ function detail(s, r, rows) {
       h('div', { class: 'sub' }, `If a token launches ${usd(r.launch)} · token odds ${pc(r.odds)}`),
       h('div', { class: 'sub' }, `P25–P75 ${usd(r.lo25)}–${usd(r.hi75)} · P10–P90 ${usd(r.lo10)}–${usd(r.hi90)}`),
       h('div', { class: 'ok' }, (ok ? '✓ ' : '✗ ') + `recomputed in this browser: ${ok ? 'equals' : 'differs from'} board.json. DefiLlama records no token for ${r.name}: a record, not proof.`)));
-  // The size curve, not the category, prices a row, so peers are the nearest traded tokens by TVL.
   const dist = t => Math.abs(Math.log(Math.max(t.tvl_usd, 1)) - Math.log(Math.max(r.tvl_usd, 1)));
   const peers = M.traded.slice().sort((a, b) => dist(a) - dist(b) || (a.slug < b.slug ? -1 : 1)).slice(0, 8);
   const peersCard = card('Nearest priced peers · their tokens trade',
@@ -357,7 +356,7 @@ function detail(s, r, rows) {
       h('td', { class: 'n' }, '×' + t.ratio.toFixed(2)), h('td', { class: 'n' }, '×' + t.predicted.toFixed(2)))))));
   const grid = h('table', { class: 'grid' }, thr(['Drop share', ...DEPS.map(d => usd(+d))]), h('tbody', null, SHARES.map(x => h('tr', null,
     h('td', null, sp(+x) + '% drop'),
-    ...DEPS.map(d => { const n = netAt(r, +d, +x); return h('td', { class: 'n ' + (n >= 0 ? 'teal' : 'coral') + (d === s.dep && x === s.sh ? ' cur' : '') }, money(n)); })))));
+    ...DEPS.map(d => { const n = netAt(r, +d, +x, wk); return h('td', { class: 'n ' + (n >= 0 ? 'teal' : 'coral') + (d === s.dep && x === s.sh ? ' cur' : '') }, money(n)); })))));
   const verdictCard = card('Farm verdict',
     h('span', { class: 'pill big ' + VCLS[v.verdict] }, v.verdict),
     h('p', { class: 'vline' }, `${v.verdict}: ${usd(dep)} for ${W} weeks buys a modelled drop of ${usd(v.drop)} for ${usd(v.fees)} of fees, ${usd(v.forgone)} of forgone T-bill yield and ${v.hours.toFixed(1)} h of work: a net of ${money(v.net)} (${money(v.perHour)} an hour)`),
@@ -378,18 +377,36 @@ function detail(s, r, rows) {
   ];
 }
 
-function downloadCsv(s, list) {
-  const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-  const t = s.tab === 'traded';
-  const head = t ? 'slug,name,symbol,category,tvl_usd,mcap_usd,cap_to_tvl,model_cap_to_tvl' : 'rank,slug,name,set,category,tvl_usd,change_7d,age_days,token_odds,launch_usd,implied_usd,verdict,net_usd,net_per_hour';
-  const body = list.map(r => (t ? [r.slug, r.name, r.symbol, r.category, r.tvl_usd, r.mcap_usd, r.ratio, r.predicted]
-    : [r.rank, r.slug, r.name, r.set, r.category, r.tvl_usd, r.change_7d, r.age_days, r.odds, r.launch, r.implied_value_usd, r.v.verdict, r.v.net, r.v.perHour]).map(q).join(','));
-  const url = URL.createObjectURL(new Blob([[head, ...body].join('\n') + '\n'], { type: 'text/csv' }));
-  const a = h('a', { href: url, download: `radar-${s.tab}.csv`, hidden: true });
+function save(name, type, text) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = h('a', { href: url, download: name, hidden: true });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportRows(s, list) {
+  if (s.tab === 'traded') return list.map(r => ({ slug: r.slug, name: r.name, symbol: r.symbol, category: r.category, tvl_usd: r.tvl_usd, mcap_usd: r.mcap_usd, cap_to_tvl: r.ratio, model_cap_to_tvl: r.predicted }));
+  return list.map(r => ({ rank: r.rank, slug: r.slug, name: r.name, set: r.set, category: r.category, tvl_usd: r.tvl_usd, change_7d: r.change_7d, age_days: r.age_days,
+    token_odds: r.odds, launch_usd: r.launch, implied_usd: r.implied_value_usd, verdict: r.v.verdict, net_usd: r.v.net, net_per_hour: r.v.perHour,
+    range_p25_p75: [r.lo25, r.hi75], rank_range: [r.rank_lo, r.rank_hi], farm_steps: r.plan.map(RadarModel.stepText) }));
+}
+
+function downloadCsv(s, list) {
+  const q = v => '"' + (Array.isArray(v) ? v.join(' | ') : String(v ?? '')).replace(/"/g, '""') + '"';
+  const rows = exportRows(s, list), head = Object.keys(rows[0] || {});
+  save(`radar-${s.tab}.csv`, 'text/csv', [head.join(','), ...rows.map(r => head.map(k => q(r[k])).join(','))].join('\n') + '\n');
+}
+
+function downloadJson(s, list) {
+  const V = M.value, O = M.odds;
+  const doc = {
+    version: M.version, as_of: M.as_of, deposit: Number(s.dep), drop_share: Number(s.sh), horizon_weeks: s.hz || 'auto',
+    filters: { tab: s.tab, q: s.q, cat: s.cat, chain: s.chain, vd: s.vd },
+    value: { kept: V.kept, coef: V.coef, se: V.se ?? null }, odds: { kept: O.kept, coef: O.coef, se: O.se ?? null }, rows: exportRows(s, list),
+  };
+  save(`radar-${s.tab}.json`, 'application/json', JSON.stringify(doc, null, 1));
 }
 
 function render() {
@@ -397,7 +414,7 @@ function render() {
   const s = readState(), rows = calc(s), cur = s.p && rows.find(r => r.slug === s.p);
   const body = cur ? detail(s, cur, rows) : board(s, rows);
   app.replaceChildren(mast(), ...body,
-    h('footer', { class: 'foot' }, `Model ${M.version}. Every figure here is recomputed in this browser from the sealed snapshot by model.js; nothing is fetched. Implied value is this board's estimate, not a prediction that a token will launch.`));
+    h('footer', { class: 'foot' }, `Model ${M.version}, recomputed in this browser from the sealed snapshot; nothing is fetched. Implied value is an estimate, not a launch prediction. CSV or JSON export of the rows in view.`));
   // Keep keyboard focus and caret across the full rebuild.
   const el = fid && document.getElementById(fid);
   if (el) {
@@ -410,7 +427,7 @@ app.addEventListener('click', e => {
   const t = e.target, hit = sel => t.closest(sel);
   const tab = hit('[data-tab]'); if (tab) return go({ tab: tab.dataset.tab });
   const vd = hit('[data-vd]'); if (vd) return go({ vd: vd.dataset.vd });
-  const sh = hit('[data-sh]'); if (sh) return go({ sh: sh.dataset.sh });
+  const hz = hit('[data-hz]'); if (hz) return go({ hz: hz.dataset.hz });
   const so = hit('[data-sort]');
   if (so) {
     const k = so.dataset.sort, s = readState();
@@ -424,17 +441,22 @@ app.addEventListener('click', e => {
     const s = readState();
     return downloadCsv(s, visible(s, calc(s)).list);
   }
+  if (hit('[data-json]')) {
+    const s = readState();
+    return downloadJson(s, visible(s, calc(s)).list);
+  }
   const tr = hit('tr[data-href]');
   if (tr && !hit('a,button')) location.hash = tr.dataset.href;
 });
 
 app.addEventListener('change', e => {
   const k = e.target.name;
-  if (k) go({ [k]: e.target.value });
+  if (k) go({ [k]: e.target.value }, k === 'sh');
 });
 
 app.addEventListener('input', e => {
   if (e.target.id === 'q') go({ q: e.target.value }, true);
+  if (e.target.id === 'sh') go({ sh: e.target.value }, true);
 });
 
 window.addEventListener('hashchange', render);

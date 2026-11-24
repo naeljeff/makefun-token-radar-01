@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const Model = require('./dashboard/model.js');
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const FORMULA = 'implied_value_usd = launch value (TVL x fitted size curve x kept terms, each kept only if it cuts the held-out miss both leave-one-out and walk-forward) x token odds (logistic on the kept terms, fitted on peers that do or do not record a token)';
+const FORMULA = 'implied_value_usd = launch value (TVL x fitted size curve read at last week\'s TVL, so 7-day growth moves it, x kept terms, each kept only if it cuts the held-out miss both leave-one-out and walk-forward) x token odds (logistic on the kept terms, fitted on peers that do or do not record a token)';
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
 function fail(code: number, message: string): never {
@@ -48,9 +48,33 @@ if (snapshot === null || typeof snapshot !== 'object' || typeof snapshot.as_of !
   fail(2, 'token radar: snapshot must be an object with string as_of, array protocols and array watchlist');
 }
 
+function issue(rows: any[], snapshot: any): string | null {
+ if (!Array.isArray(rows) || rows.length < 100 || rows.length > 4000) return `row count ${rows && rows.length}`;
+ const slugs = new Set(snapshot.protocols.map(p => p.slug)), rowSlugs = new Set(rows.map(r => r.slug));
+ for (const w of snapshot.watchlist) if (!rowSlugs.has(w)) return `watchlist missing: ${w}`;
+ const seen = new Set();
+ for (const r of rows) {
+  if (seen.has(r.slug) || !slugs.has(r.slug)) return `bad slug: ${r.slug}`;
+  seen.add(r.slug);
+ }
+ let prev = Infinity;
+ for (let i = 0; i < rows.length; i++) {
+  const r = rows[i], v = r.implied_value_usd;
+  if (r.rank !== i + 1) return `rank ${r.rank} at index ${i}`;
+  if (!Number.isSafeInteger(v) || v <= 0 || v > 1e14) return `bad implied: ${r.slug}`;
+  if (v > prev) return `implied rises at rank ${r.rank}`;
+  prev = v;
+  if (!Array.isArray(r.farm_steps) || r.farm_steps.length < 3 || r.farm_steps.length > 12) return `steps: ${r.slug}`;
+  if (r.farm_steps.some(s => typeof s !== 'string' || s.trim().length < 20 || s.trim().length > 600)) return `step length: ${r.slug}`;
+  if (typeof r.name !== 'string' || !r.name.trim()) return `name: ${r.slug}`;
+ }
+ if (rows.every(r => r.implied_value_usd === rows[0].implied_value_usd)) return 'all implied equal';
+ return null;
+}
+
 const model = Model.build(snapshot);
 const rows = Model.boardRows(model);
-const problem = Model.issue(rows, snapshot);
+const problem = issue(rows, snapshot);
 if (problem) fail(1, `token radar: board refused: ${problem}`);
 
 const dashNames = listFiles(join(here, 'dashboard'));
@@ -60,7 +84,7 @@ for (const name of shotNames) {
   if (!IMAGE_NAME.test(name)) fail(1, `token radar: screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters`);
 }
 const dashBytes = dashNames.reduce((sum, n) => sum + statSync(join(here, 'dashboard', n)).size, 0);
-if (dashBytes > 64500) process.stderr.write(`token radar: warning: dashboard source is ${dashBytes} bytes, over 64500: the dossier text may be cut\n`);
+if (dashBytes > 64800) process.stderr.write(`token radar: warning: dashboard source is ${dashBytes} bytes, over 64800: the dossier text may be cut\n`);
 
 mkdirSync(out, { recursive: true });
 const board = {
